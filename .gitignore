@@ -1,0 +1,28 @@
+# Build output
+bin/
+obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Visual Studio / Rider
+.vs/
+*.user
+*.suo
+*.userprefs
+*.rsuser
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Environment / secrets
+*.env
+appsettings.Local.json
+appsettings.*.Local.json
