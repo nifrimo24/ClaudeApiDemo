@@ -21,3 +21,4 @@ C:\Users\nmorillo\RiderProjects\ClaudeApiDemo\ClaudeApiDemo\obj\Debug\net8.0\ref
 C:\Users\nmorillo\RiderProjects\ClaudeApiDemo\ClaudeApiDemo\obj\Debug\net8.0\ClaudeApiDemo.pdb
 C:\Users\nmorillo\RiderProjects\ClaudeApiDemo\ClaudeApiDemo\obj\Debug\net8.0\ClaudeApiDemo.genruntimeconfig.cache
 C:\Users\nmorillo\RiderProjects\ClaudeApiDemo\ClaudeApiDemo\obj\Debug\net8.0\ref\ClaudeApiDemo.dll
+C:\Users\nmorillo\RiderProjects\ClaudeApiDemo\ClaudeApiDemo\obj\Debug\net8.0\ClaudeApiDemo.sourcelink.json

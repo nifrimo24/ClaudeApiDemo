@@ -4,13 +4,15 @@ using Anthropic.SDK;
 using Anthropic.SDK.Common;
 using Anthropic.SDK.Constants;
 using Anthropic.SDK.Messaging;
+using Tool = Anthropic.SDK.Common.Tool;
 
 var client = new AnthropicClient(); // lee ANTHROPIC_API_KEY
 
-var demo = 8;
+var demo = 12;
 
 switch (demo)
 {
+    // DEMOS - Sesión 3
     case 1: await Demo1_PrimeraRequest(); break;
     case 2: await Demo2_CompararModelos(); break;
     case 3: await Demo3_MultiTurn(); break;
@@ -19,6 +21,12 @@ switch (demo)
     case 6: await Demo6_XmlTags(); break;
     case 7: await Demo7_FewShot(); break;
     case 8: await Demo8_JsonOutput(); break;
+
+    // DEMOS - Sesión 4
+    case 9: await Demo1_ToolFechaHora(); break;
+    case 10: await Demo2_ToolEstadoPedido(); break;
+    case 11: await Demo3_Chaining(); break;
+    case 12: await Demo4_Routing(); break;
 }
 
 // DEMOS - Sesión 3
@@ -295,3 +303,338 @@ async Task Demo8_JsonOutput()
 }
 
 // DEMOS - Sesión 4
+async Task Demo1_ToolFechaHora()
+{
+    Console.WriteLine("=== DEMO 1: Tool — fecha y hora ===\n");
+
+    // Paso 1: Definir el tool
+    var toolFecha = new Function(
+        "get_current_datetime",
+        "Returns the current server date and time. Call this whenever the user needs to know the current time or date.",
+        JsonNode.Parse("""{"type":"object","properties":{},"required":[]}""")
+    );
+
+    // Paso 2: Primera llamada - Claude recibe el tool disponible
+    var messages = new List<Message>
+    {
+        new Message(RoleType.User, "Qué hora exacta es ahora mismo?")
+    };
+
+    var response = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+    {
+        Model = AnthropicModels.Claude46Sonnet,
+        MaxTokens = 500,
+        Messages = messages,
+        Tools = new List<Tool>() { toolFecha }
+    });
+
+    // Paso 3: Detectar que Claude quiere llamar al tool
+    Console.WriteLine($"StopReason: {response.StopReason}");
+    Console.WriteLine($"Bloques en la respuesta: {response.Content.Count}");
+
+    foreach (var block in response.Content)
+        Console.WriteLine($"  → {block.GetType().Name}"); // TextContent y ToolUseContent
+
+    if (response.StopReason == "tool_use")
+    {
+        var toolCall = response.Content.OfType<ToolUseContent>().First();
+        Console.WriteLine($"\nClaude solicitó: {toolCall.Name}");
+        Console.WriteLine($"Tool ID: {toolCall.Id}");
+
+        var resultado = DateTime.Now.ToString("HH:mm:ss 'del' dd/MM/yyyy");
+        Console.WriteLine($"Resultado de la función: {resultado}");
+
+        // Paso 4: Enviar el resultado de vuelta
+        // Mantener la conversación
+        messages.Add(response.Message); // (a) mensaje del asistente
+        messages.Add(new Message // (b) resultado del tool
+        {
+            Role = RoleType.User,
+            Content = new List<ContentBase>
+            {
+                new ToolResultContent
+                {
+                    ToolUseId = toolCall.Id,
+                    Content = new List<ContentBase>
+                    {
+                        new TextContent { Text = resultado }
+                    }
+                }
+            }
+        });
+
+        // Paso 5: Llamada final
+        var response2 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+        {
+            Model = AnthropicModels.Claude46Sonnet,
+            MaxTokens = 512,
+            Messages = messages,
+            Tools = new List<Anthropic.SDK.Common.Tool> { toolFecha }
+        });
+
+        Console.WriteLine($"\nRespuesta final de Claude:\n{response2.Message}");
+        Console.WriteLine($"StopReason final: {response2.StopReason}"); // end_turn
+    }
+}
+
+async Task Demo2_ToolEstadoPedido()
+{
+    Console.WriteLine("=== DEMO 2: Tool — estado de pedido SIMED ===\n");
+
+    string ConsultarEstadoPedido(string orderId) =>
+        orderId switch
+        {
+            "ORD-001" => "Pendiente — creado hace 2 horas. Cancelable dentro de las primeras 24h.",
+            "ORD-002" => "En proceso — asignado a picking. Requiere autorización del supervisor para cancelar.",
+            "ORD-003" => "Enviado — en camino con courier. No se puede cancelar.",
+            "ORD-004" => "Entregado — entregado el 09/06/2026. Proceso cerrado.",
+            _ => "Pedido no encontrado en el sistema."
+        };
+
+    // Tool con parámetro requerido
+    var toolPedido = new Function(
+        "get_order_status",
+        "Returns the current status of a SIMED order and the applicable cancellation policy. " +
+        "Call this when the user asks about order status, cancellation options, or delivery stage. " +
+        "Returns status and cancellation rules for that status.",
+        JsonNode.Parse("""
+                       {
+                           "type": "object",
+                           "properties": {
+                               "order_id": {
+                                   "type": "string",
+                                   "description": "The SIMED order ID. Format: ORD-NNN (e.g., ORD-001)"
+                               }
+                           },
+                           "required": ["order_id"]
+                       }
+                       """)
+    );
+
+    var systemMessages = new List<SystemMessage>
+    {
+        new SystemMessage("Eres un asistente de soporte de SIMED. " +
+                          "Usa los tools disponibles para consultar datos reales antes de responder. " +
+                          "Responde en español de forma clara y útil para el cliente.")
+    };
+
+    var preguntas = new[]
+    {
+        "¿Puedo cancelar el pedido ORD-002?",
+        "¿Qué pasó con mi pedido ORD-004?"
+    };
+
+    foreach (var pregunta in preguntas)
+    {
+        Console.WriteLine($"─── Usuario: {pregunta}");
+
+        var messages = new List<Message>
+        {
+            new Message(RoleType.User, pregunta)
+        };
+
+        var response1 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+        {
+            Model = AnthropicModels.Claude46Sonnet,
+            MaxTokens = 512,
+            System = systemMessages,
+            Messages = messages,
+            Tools = new List<Tool> { toolPedido }
+        });
+
+        if (response1.StopReason == "tool_use")
+        {
+            var toolCall = response1.Content.OfType<ToolUseContent>().First();
+
+            var orderId = toolCall.Input["order_id"]?.ToString() ?? "";
+            Console.WriteLine($"    [Tool call → {toolCall.Name}('{orderId}')]");
+
+            var estadoReal = ConsultarEstadoPedido(orderId);
+            Console.WriteLine($"    [BD retorna → '{estadoReal}']");
+
+            messages.Add(response1.Message);
+            messages.Add(new Message
+            {
+                Role = RoleType.User,
+                Content = new List<ContentBase>
+                {
+                    new ToolResultContent
+                    {
+                        ToolUseId = toolCall.Id,
+                        Content = new List<ContentBase>
+                        {
+                            new TextContent { Text = estadoReal }
+                        }
+                    }
+                }
+            });
+
+            var response2 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+            {
+                Model = AnthropicModels.Claude46Sonnet,
+                MaxTokens = 512,
+                System = systemMessages,
+                Messages = messages,
+                Tools = new List<Tool> { toolPedido }
+            });
+
+            Console.WriteLine($"    Asistente: {response2.Message}\n");
+        }
+        else
+        {
+            Console.WriteLine($"    Asistente (sin tool): {response1.Message}\n");
+        }
+    }
+}
+
+async Task Demo3_Chaining()
+{
+    Console.WriteLine("=== DEMO 3: Chaining workflow ===\n");
+
+    // LLamada 1: Generar el borrador
+    var prompt1 = """
+                  Escribe un mensaje de respuesta al cliente para este reclamo:
+                  "Mi pedido ORD-001 debía llegar ayer y no ha llegado. Necesito saber qué pasó."
+
+                  Sé amable y proporciona una respuesta de 2-3 oraciones.
+                  """;
+
+    var response1 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+    {
+        Model = AnthropicModels.Claude46Sonnet,
+        MaxTokens = 512,
+        Messages = new List<Message> { new Message(RoleType.User, prompt1) }
+    });
+
+    // Guardamos el borrador como string para inyectarlo en el siguiente prompt
+    var borrador = response1.Message.ToString();
+    Console.WriteLine($"PASO 1 — BORRADOR:\n{borrador}\n");
+    Console.WriteLine("─".PadRight(60, '─'));
+
+    // LLamada 1: Revisar el borrador con criterios de calidad
+    var prompt2 = $"""
+                   Eres un editor de calidad para mensajes de soporte al cliente de SIMED.
+                   Revisa el siguiente mensaje y aplica estas correcciones si aplican:
+
+                   1. Si el mensaje promete una fecha de entrega específica: elimínala
+                      (no podemos garantizarla sin verificar con logística).
+                   2. Si usa la palabra "disculpa" o "lo siento" más de una vez: dejar solo uno.
+                   3. Si no incluye un número de referencia: agregar al final
+                      "(Referencia caso: {DateTime.Now:yyyyMMddHHmm})"
+                   4. Si los próximos pasos no son concretos: hacer más específicos.
+
+                   Si el mensaje ya cumple todos los criterios, devuélvelo sin cambios.
+
+                   Mensaje a revisar:
+                   ---
+                   {borrador}
+                   ---
+
+                   Devuelve solo el mensaje corregido, sin explicaciones.
+                   """;
+
+    var response2 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+    {
+        Model = AnthropicModels.Claude46Sonnet,
+        MaxTokens = 512,
+        Messages = new List<Message> { new Message(RoleType.User, prompt2) }
+    });
+
+    Console.WriteLine($"\nPASO 2 — REVISADO:\n{response2.Message}");
+
+    // Mostrar tokens de cada paso — útil para entender el overhead del chaining
+    Console.WriteLine(
+        $"\nTokens de salida — Paso 1: {response2.Usage.OutputTokens} · Paso 2: {response2.Usage.OutputTokens}");
+}
+
+async Task Demo4_Routing()
+{
+    Console.WriteLine("=== DEMO 4: Routing workflow ===\n");
+
+    // Diccionario de system prompts especializados por categoría
+    // Cada entry define un "personaje" diferente con reglas de negocio propias
+    var promptsEspecializados = new Dictionary<string, string>
+    {
+        ["tracking"] =
+            "Eres un especialista en logística de SIMED. " +
+            "Ayuda al cliente con su consulta sobre envío o entrega. " +
+            "Si necesitas el número de seguimiento del courier, indícale cómo obtenerlo.",
+
+        ["reclamo"] =
+            "Eres el equipo de calidad de SIMED. " +
+            "Toma el reclamo con seriedad y empatía. " +
+            "Solicita: foto del producto dañado y número de pedido. " +
+            "Informa que el proceso de reposición tarda 3-5 días hábiles.",
+
+        ["cancelacion"] =
+            "Eres el equipo de cancelaciones de SIMED. " +
+            "Aplica estas reglas: Pendiente = cancelable en las primeras 24h; " +
+            "En proceso = requiere autorización del supervisor; " +
+            "Enviado = no se puede cancelar. " +
+            "Pide el número de pedido si no lo tienes.",
+
+        ["informacion"] =
+            "Eres el asistente de información general de SIMED. " +
+            "Responde de forma concisa. " +
+            "Horario de atención: lunes a viernes 8h-18h. " +
+            "Para temas específicos de pedidos, transfiere al área correspondiente."
+    };
+
+    var consultas = new[]
+    {
+        "¿Cuándo llega mi pedido ORD-003?",
+        "El producto que recibí llegó completamente roto.",
+        "Quiero cancelar el pedido ORD-001 que hice hoy.",
+        "¿Atienden los sábados?"
+    };
+
+    // Prompt del clasificador: muy enfocado, solo devuelve la categoría
+    // {0} es un placeholder → se llena con string.Format(promptClasificador, consulta)
+    var promptClasificador = """
+                             Clasifica la siguiente consulta de cliente en exactamente una de estas categorías:
+                             - tracking (preguntas sobre estado de pedido, envío, tracking, entrega)
+                             - reclamo (productos dañados, incorrectos, problemas de calidad)
+                             - cancelacion (solicitudes para cancelar un pedido)
+                             - informacion (preguntas generales: horarios, políticas, cómo funciona el servicio)
+
+                             Responde SOLO con la categoría en minúsculas, sin explicación, sin puntuación.
+
+                             Consulta: {0}
+                             """;
+
+    foreach (var consulta in consultas)
+    {
+        Console.WriteLine($"─── Consulta: \"{consulta}\"");
+
+        // Paso 1: Clasificar - Haiku
+        var respClasificacion = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+        {
+            Model = AnthropicModels.Claude45Haiku,
+            MaxTokens = 15,
+            Messages = new List<Message>
+            {
+                new Message(RoleType.User, string.Format(promptClasificador, consulta))
+            }
+        });
+
+        var categoria = respClasificacion.Message.ToString().Trim().ToLower();
+        Console.WriteLine($"    Categoría detectada: [{categoria}]");
+
+        // Paso 2: Responder con el especialista correcto
+        if (promptsEspecializados.TryGetValue(categoria, out var systemPrompt))
+        {
+            var respFinal = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+            {
+                Model = AnthropicModels.Claude46Sonnet,
+                MaxTokens = 200,
+                System = new List<SystemMessage> { new SystemMessage(systemPrompt) },
+                Messages = new List<Message> { new Message(RoleType.User, consulta) }
+            });
+            Console.WriteLine($"    Respuesta: {respFinal.Message}\n");
+        }
+        else
+        {
+            Console.WriteLine($"    [Categoría no reconocida: '{categoria}']\n");
+        }
+    }
+}
