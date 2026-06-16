@@ -145,6 +145,165 @@ app.MapPost("/api/soporte/agente", async (SoporteRequest req) =>
     ));
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// RETO 5-A: Eval pipeline — GET /api/eval/soporte
+// Compara vA (prompt actual) vs vB (prompt mejorado) con 10 casos SIMED
+// Grader: Haiku califica cada respuesta del 1-10
+// ──────────────────────────────────────────────────────────────────────────────
+
+// vA = el system prompt actual (mismo que /api/soporte)
+var promptVA = """
+    Eres un asistente de soporte para SIMED, un sistema de gestión de pedidos.
+
+    Reglas de negocio:
+    - Pedidos 'Pendiente': cancelables dentro de las primeras 24 horas sin necesidad de justificación.
+    - Pedidos 'En proceso': la cancelación requiere autorización del supervisor.
+    - Pedidos 'Enviados': no se pueden cancelar bajo ninguna circunstancia.
+    - Pedidos urgentes: tienen un cargo adicional del 15 % sobre el total.
+
+    Crédito:
+    - Límite inicial para clientes nuevos: $5,000 USD, revisable a los 90 días.
+    - Pedidos que superan el límite quedan bloqueados hasta preaprobación del área de crédito.
+
+    Devoluciones:
+    - Plazo: 30 días desde la fecha de entrega confirmada.
+    - Productos dañados: el cliente debe reportarlos dentro de las 48 horas con foto del daño.
+    - Reembolsos aprobados se procesan en 5 a 7 días hábiles.
+
+    Responde siempre en español, de forma clara y directa.
+    Si la pregunta está fuera del contexto de SIMED, indica amablemente que no tienes esa información.
+    """;
+
+// vB = prompt mejorado: más específico, con ejemplos de tono y límite de extensión
+var promptVB = """
+    Eres un asistente de soporte para SIMED, un sistema de gestión de pedidos B2B.
+
+    REGLAS DE CANCELACIÓN:
+    - Estado 'Pendiente': el cliente puede cancelar sin justificación si han pasado menos de 24 horas desde la creación.
+    - Estado 'En proceso': la cancelación requiere aprobación explícita de un supervisor; informa al cliente que debes escalar la solicitud.
+    - Estado 'Enviado' o 'Entregado': no se puede cancelar; deriva al proceso de devoluciones.
+    - Si no conoces el estado del pedido, pide el número de pedido antes de responder.
+
+    REGLAS DE CRÉDITO:
+    - Clientes nuevos: límite inicial de $5,000 USD, revisable a los 90 días con historial de pagos.
+    - Pedidos bloqueados por límite: informa que deben contactar al área de crédito para preaprobación; no ofrezcas excepciones.
+    - Incrementos temporales de crédito: vigencia máxima de 30 días, requieren autorización del gerente de crédito.
+
+    REGLAS DE DEVOLUCIONES:
+    - Plazo: 30 días desde la entrega confirmada.
+    - Productos dañados: el cliente debe reportar dentro de las 48 horas adjuntando foto; fuera de ese plazo se trata como devolución estándar.
+    - Reembolsos: 5 a 7 días hábiles al método de pago original. Productos con descuento especial: solo crédito en cuenta.
+
+    TONO Y FORMATO:
+    - Responde siempre en español, con empatía y precisión.
+    - Máximo 3 oraciones por respuesta, salvo que el cliente pida más detalle.
+    - Si la pregunta está fuera del contexto de SIMED, responde: "Esa información está fuera de mi alcance como asistente de SIMED. ¿Puedo ayudarte con algo relacionado a tus pedidos?"
+    """;
+
+// 10 casos de prueba que cubren los flujos principales de SIMED
+var casosSimed = new[]
+{
+    "Quiero cancelar mi pedido, lo hice hace 2 horas y está en Pendiente.",
+    "Mi pedido está En proceso, ¿puedo cancelarlo?",
+    "El pedido ya fue enviado, ¿hay alguna forma de cancelarlo?",
+    "Me llegó el producto roto, ¿qué hago?",
+    "Reporté un daño ayer pero lo recibí hace 3 días, ¿todavía aplica?",
+    "¿Cuánto tiempo tengo para hacer una devolución?",
+    "Mi pedido fue bloqueado, creo que superé el límite de crédito. ¿Qué hago?",
+    "Soy cliente nuevo, ¿cuál es mi límite de crédito?",
+    "Quiero hacer un pedido urgente, ¿hay algún costo adicional?",
+    "¿Cuál es el tipo de cambio del dólar hoy?"   // caso fuera de scope — mide si respeta el límite
+};
+
+app.MapGet("/api/eval/soporte", async () =>
+{
+    var resultadosVA = new List<EvalCaso>();
+    var resultadosVB = new List<EvalCaso>();
+
+    foreach (var caso in casosSimed)
+    {
+        // Correr el caso en vA y vB
+        var respA = await EjecutarPrompt(promptVA, caso);
+        var respB = await EjecutarPrompt(promptVB, caso);
+
+        // Calificar ambas respuestas con Haiku
+        var scoreA = await Calificar(caso, respA);
+        var scoreB = await Calificar(caso, respB);
+
+        resultadosVA.Add(new EvalCaso(caso, respA, scoreA));
+        resultadosVB.Add(new EvalCaso(caso, respB, scoreB));
+    }
+
+    var promedioA = Math.Round(resultadosVA.Average(r => r.Score), 2);
+    var promedioB = Math.Round(resultadosVB.Average(r => r.Score), 2);
+    var mejora    = Math.Round(promedioB - promedioA, 2);
+
+    return Results.Ok(new EvalResponse(
+        new EvalVersion("vA — prompt original", promedioA, resultadosVA),
+        new EvalVersion("vB — prompt mejorado", promedioB, resultadosVB),
+        mejora > 0 ? $"+{mejora} puntos" : $"{mejora} puntos"
+    ));
+
+    // Ejecuta el caso con el prompt dado y retorna la respuesta como string
+    async Task<string> EjecutarPrompt(string systemPrompt, string pregunta)
+    {
+        var resp = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+        {
+            Model     = AnthropicModels.Claude46Sonnet,
+            MaxTokens = 512,
+            System    = new List<SystemMessage> { new SystemMessage(systemPrompt) },
+            Messages  = new List<Message> { new Message(RoleType.User, pregunta) }
+        });
+        return resp.Message.ToString();
+    }
+
+    // Haiku califica la respuesta del 1 al 10 con razonamiento previo
+    async Task<double> Calificar(string pregunta, string respuesta)
+    {
+        var promptGrader = $"""
+            Eres un evaluador experto de asistentes de soporte al cliente.
+            Evalúa si la siguiente respuesta es correcta, clara y útil para el usuario.
+
+            Pregunta del usuario: {pregunta}
+            Respuesta del asistente: {respuesta}
+
+            Proporciona tu evaluación en este formato exacto:
+            Fortalezas: [1-2 puntos fuertes]
+            Debilidades: [1-2 áreas de mejora]
+            Razonamiento: [1 oración explicando tu puntuación]
+            Puntuación: [número entre 1 y 10]
+            """;
+
+        var resp = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+        {
+            Model     = AnthropicModels.Claude45Haiku,
+            MaxTokens = 250,
+            Messages  = new List<Message> { new Message(RoleType.User, promptGrader) }
+        });
+
+        return ExtraerScore(resp.Message.ToString());
+    }
+
+    static double ExtraerScore(string texto)
+    {
+        foreach (var linea in texto.Split('\n'))
+        {
+            var l = linea.Trim();
+            if (l.StartsWith("Puntuación:", StringComparison.OrdinalIgnoreCase))
+            {
+                var partes = l.Split(':');
+                if (partes.Length >= 2 && double.TryParse(
+                        partes[1].Trim().Split('/')[0].Trim(),
+                        System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out var n))
+                    return n;
+            }
+        }
+        return 5.0; // fallback si no se puede parsear
+    }
+});
+
 app.Run();
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1006,3 +1165,6 @@ record SoporteRequest(string Pregunta);
 record SoporteResponse(string Respuesta, TokenUsage Tokens);
 record AgenteResponse(string Respuesta, string? ToolUsado, string? ResultadoTool, TokenUsage Tokens);
 record TokenUsage(int Entrada, int Salida);
+record EvalCaso(string Pregunta, string Respuesta, double Score);
+record EvalVersion(string Nombre, double PromedioScore, List<EvalCaso> Casos);
+record EvalResponse(EvalVersion VersionA, EvalVersion VersionB, string Mejora);
