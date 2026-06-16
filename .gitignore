@@ -26,4 +26,4 @@ Thumbs.db
 *.env
 appsettings.Local.json
 appsettings.*.Local.json
-Properties/launchSettings.json
+**/Properties/launchSettings.json
