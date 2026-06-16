@@ -7,36 +7,65 @@ using Anthropic.SDK.Constants;
 using Anthropic.SDK.Messaging;
 using Tool = Anthropic.SDK.Common.Tool;
 
+// ──────────────────────────────────────────────────────────────────────────────
+// RETO 3-A: Claude en un proyecto real — POST /api/soporte
+// ──────────────────────────────────────────────────────────────────────────────
+
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
 var client = new AnthropicClient(); // lee ANTHROPIC_API_KEY
 
-var demo = 16;
-
-switch (demo)
+var systemSimed = new List<SystemMessage>
 {
-    // DEMOS - Sesión 3
-    case 1: await Demo1_PrimeraRequest(); break;
-    case 2: await Demo2_CompararModelos(); break;
-    case 3: await Demo3_MultiTurn(); break;
-    case 4: await Demo4_SystemPrompt(); break;
-    case 5: await Demo5_PromptEngineering(); break;
-    case 6: await Demo6_XmlTags(); break;
-    case 7: await Demo7_FewShot(); break;
-    case 8: await Demo8_JsonOutput(); break;
+    new SystemMessage("""
+        Eres un asistente de soporte para SIMED, un sistema de gestión de pedidos.
 
-    // DEMOS - Sesión 4
-    case 9: await Demo1_ToolFechaHora(); break;
-    case 10: await Demo2_ToolEstadoPedido(); break;
-    case 11: await Demo3_Chaining(); break;
-    case 12: await Demo4_Routing(); break;
+        Reglas de negocio:
+        - Pedidos 'Pendiente': cancelables dentro de las primeras 24 horas sin necesidad de justificación.
+        - Pedidos 'En proceso': la cancelación requiere autorización del supervisor.
+        - Pedidos 'Enviados': no se pueden cancelar bajo ninguna circunstancia.
+        - Pedidos urgentes: tienen un cargo adicional del 15 % sobre el total.
 
-    // DEMOS - Sesión 5
-    case 13: await Demo1_PromptEval();  break;
-    case 14: await Demo2_ExtendedThinking();  break;
-    case 15: await Demo3_ImageSupport();  break;
-    case 16: await Demo4_PromptCaching();  break;
-}
+        Crédito:
+        - Límite inicial para clientes nuevos: $5,000 USD, revisable a los 90 días.
+        - Pedidos que superan el límite quedan bloqueados hasta preaprobación del área de crédito.
 
-// DEMOS - Sesión 3
+        Devoluciones:
+        - Plazo: 30 días desde la fecha de entrega confirmada.
+        - Productos dañados: el cliente debe reportarlos dentro de las 48 horas con foto del daño.
+        - Reembolsos aprobados se procesan en 5 a 7 días hábiles.
+
+        Responde siempre en español, de forma clara y directa.
+        Si la pregunta está fuera del contexto de SIMED, indica amablemente que no tienes esa información.
+        """)
+};
+
+app.MapPost("/api/soporte", async (SoporteRequest req) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Pregunta))
+        return Results.BadRequest(new { error = "La pregunta no puede estar vacía." });
+
+    var response = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+    {
+        Model = AnthropicModels.Claude46Sonnet,
+        MaxTokens = 1024,
+        System = systemSimed,
+        Messages = new List<Message> { new Message(RoleType.User, req.Pregunta) }
+    });
+
+    return Results.Ok(new SoporteResponse(
+        response.Message.ToString(),
+        new TokenUsage(response.Usage.InputTokens, response.Usage.OutputTokens)
+    ));
+});
+
+app.Run();
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DEMOS - Sesión 3 (referencia)
+// ──────────────────────────────────────────────────────────────────────────────
+
 async Task Demo1_PrimeraRequest()
 {
     Console.WriteLine("=== DEMO 1: Primera request ===\n");
@@ -106,7 +135,6 @@ async Task Demo3_MultiTurn()
     messages.Add(new Message(RoleType.User, "Cuantos servicios mencione?"));
 
     // Turno 2
-
     var response2 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
     {
         Model = AnthropicModels.Claude46Sonnet,
@@ -298,30 +326,37 @@ async Task Demo8_JsonOutput()
     Console.WriteLine("Respuesta de Claude:");
     Console.WriteLine(json);
 
-    // Parsear el JSON
-    var doc = JsonDocument.Parse(json);
-    var cliente = doc.RootElement.GetProperty("cliente").GetString();
-    var monto = doc.RootElement.GetProperty("monto").GetDecimal();
-    var requiere = doc.RootElement.GetProperty("requiereAprobacion").GetBoolean();
+    try
+    {
+        var doc = JsonDocument.Parse(json);
+        var cliente = doc.RootElement.GetProperty("cliente").GetString();
+        var monto = doc.RootElement.GetProperty("monto").GetDecimal();
+        var requiere = doc.RootElement.GetProperty("requiereAprobacion").GetBoolean();
 
-    Console.WriteLine($"\nCliente extraído: {cliente}");
-    Console.WriteLine($"Monto: {monto:C}");
-    Console.WriteLine($"Requiere aprobación: {requiere}");
+        Console.WriteLine($"\nCliente extraído: {cliente}");
+        Console.WriteLine($"Monto: {monto:C}");
+        Console.WriteLine($"Requiere aprobación: {requiere}");
+    }
+    catch (JsonException ex)
+    {
+        Console.WriteLine($"Error al parsear JSON: {ex.Message}");
+    }
 }
 
-// DEMOS - Sesión 4
+// ──────────────────────────────────────────────────────────────────────────────
+// DEMOS - Sesión 4 (referencia)
+// ──────────────────────────────────────────────────────────────────────────────
+
 async Task Demo1_ToolFechaHora()
 {
     Console.WriteLine("=== DEMO 1: Tool — fecha y hora ===\n");
 
-    // Paso 1: Definir el tool
     var toolFecha = new Function(
         "get_current_datetime",
         "Returns the current server date and time. Call this whenever the user needs to know the current time or date.",
         JsonNode.Parse("""{"type":"object","properties":{},"required":[]}""")
     );
 
-    // Paso 2: Primera llamada - Claude recibe el tool disponible
     var messages = new List<Message>
     {
         new Message(RoleType.User, "Qué hora exacta es ahora mismo?")
@@ -335,12 +370,11 @@ async Task Demo1_ToolFechaHora()
         Tools = new List<Tool>() { toolFecha }
     });
 
-    // Paso 3: Detectar que Claude quiere llamar al tool
     Console.WriteLine($"StopReason: {response.StopReason}");
     Console.WriteLine($"Bloques en la respuesta: {response.Content.Count}");
 
     foreach (var block in response.Content)
-        Console.WriteLine($"  → {block.GetType().Name}"); // TextContent y ToolUseContent
+        Console.WriteLine($"  → {block.GetType().Name}");
 
     if (response.StopReason == "tool_use")
     {
@@ -351,10 +385,8 @@ async Task Demo1_ToolFechaHora()
         var resultado = DateTime.Now.ToString("HH:mm:ss 'del' dd/MM/yyyy");
         Console.WriteLine($"Resultado de la función: {resultado}");
 
-        // Paso 4: Enviar el resultado de vuelta
-        // Mantener la conversación
-        messages.Add(response.Message); // (a) mensaje del asistente
-        messages.Add(new Message // (b) resultado del tool
+        messages.Add(response.Message);
+        messages.Add(new Message
         {
             Role = RoleType.User,
             Content = new List<ContentBase>
@@ -370,7 +402,6 @@ async Task Demo1_ToolFechaHora()
             }
         });
 
-        // Paso 5: Llamada final
         var response2 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
         {
             Model = AnthropicModels.Claude46Sonnet,
@@ -380,7 +411,7 @@ async Task Demo1_ToolFechaHora()
         });
 
         Console.WriteLine($"\nRespuesta final de Claude:\n{response2.Message}");
-        Console.WriteLine($"StopReason final: {response2.StopReason}"); // end_turn
+        Console.WriteLine($"StopReason final: {response2.StopReason}");
     }
 }
 
@@ -398,7 +429,6 @@ async Task Demo2_ToolEstadoPedido()
             _ => "Pedido no encontrado en el sistema."
         };
 
-    // Tool con parámetro requerido
     var toolPedido = new Function(
         "get_order_status",
         "Returns the current status of a SIMED order and the applicable cancellation policy. " +
@@ -498,7 +528,6 @@ async Task Demo3_Chaining()
 {
     Console.WriteLine("=== DEMO 3: Chaining workflow ===\n");
 
-    // LLamada 1: Generar el borrador
     var prompt1 = """
                   Escribe un mensaje de respuesta al cliente para este reclamo:
                   "Mi pedido ORD-001 debía llegar ayer y no ha llegado. Necesito saber qué pasó."
@@ -513,12 +542,10 @@ async Task Demo3_Chaining()
         Messages = new List<Message> { new Message(RoleType.User, prompt1) }
     });
 
-    // Guardamos el borrador como string para inyectarlo en el siguiente prompt
     var borrador = response1.Message.ToString();
     Console.WriteLine($"PASO 1 — BORRADOR:\n{borrador}\n");
     Console.WriteLine("─".PadRight(60, '─'));
 
-    // LLamada 1: Revisar el borrador con criterios de calidad
     var prompt2 = $"""
                    Eres un editor de calidad para mensajes de soporte al cliente de SIMED.
                    Revisa el siguiente mensaje y aplica estas correcciones si aplican:
@@ -548,8 +575,6 @@ async Task Demo3_Chaining()
     });
 
     Console.WriteLine($"\nPASO 2 — REVISADO:\n{response2.Message}");
-
-    // Mostrar tokens de cada paso — útil para entender el overhead del chaining
     Console.WriteLine(
         $"\nTokens de salida — Paso 1: {response2.Usage.OutputTokens} · Paso 2: {response2.Usage.OutputTokens}");
 }
@@ -558,8 +583,6 @@ async Task Demo4_Routing()
 {
     Console.WriteLine("=== DEMO 4: Routing workflow ===\n");
 
-    // Diccionario de system prompts especializados por categoría
-    // Cada entry define un "personaje" diferente con reglas de negocio propias
     var promptsEspecializados = new Dictionary<string, string>
     {
         ["tracking"] =
@@ -595,8 +618,6 @@ async Task Demo4_Routing()
         "¿Atienden los sábados?"
     };
 
-    // Prompt del clasificador: muy enfocado, solo devuelve la categoría
-    // {0} es un placeholder → se llena con string.Format(promptClasificador, consulta)
     var promptClasificador = """
                              Clasifica la siguiente consulta de cliente en exactamente una de estas categorías:
                              - tracking (preguntas sobre estado de pedido, envío, tracking, entrega)
@@ -613,7 +634,6 @@ async Task Demo4_Routing()
     {
         Console.WriteLine($"─── Consulta: \"{consulta}\"");
 
-        // Paso 1: Clasificar - Haiku
         var respClasificacion = await client.Messages.GetClaudeMessageAsync(new MessageParameters
         {
             Model = AnthropicModels.Claude45Haiku,
@@ -627,7 +647,6 @@ async Task Demo4_Routing()
         var categoria = respClasificacion.Message.ToString().Trim().ToLower();
         Console.WriteLine($"    Categoría detectada: [{categoria}]");
 
-        // Paso 2: Responder con el especialista correcto
         if (promptsEspecializados.TryGetValue(categoria, out var systemPrompt))
         {
             var respFinal = await client.Messages.GetClaudeMessageAsync(new MessageParameters
@@ -646,16 +665,16 @@ async Task Demo4_Routing()
     }
 }
 
-// DEMOS - Sesión 5
+// ──────────────────────────────────────────────────────────────────────────────
+// DEMOS - Sesión 5 (referencia)
+// ──────────────────────────────────────────────────────────────────────────────
+
 async Task Demo1_PromptEval()
 {
     Console.WriteLine("=== DEMO 1: Evaluación de prompts ===\n");
-    // Paso 1: Definir el prompt 
-    // Version A - prompt básico
-    var promptTemplateA = "Por favor responde la siguiente pregunta de forma clara: {0}";
+
     var promptTemplateB = "Responde con un ejemplo concreto: {0}";
 
-    // Paso 2: Dataset de casos de prueba
     var dataset = new[]
     {
         "¿Cuánto es el 15% de 240?",
@@ -668,7 +687,6 @@ async Task Demo1_PromptEval()
 
     foreach (var input in dataset)
     {
-        // PAso 3: Ejecutar el prompt con el input actual
         var promptCompleto = string.Format(promptTemplateB, input);
 
         var respuesta = await client.Messages.GetClaudeMessageAsync(new MessageParameters
@@ -681,7 +699,6 @@ async Task Demo1_PromptEval()
         var output = respuesta.Message.ToString();
         Console.WriteLine($"Respuesta ({output.Length} chars): {output[..Math.Min(80, output.Length)]}...");
 
-        // Paso 4: Grader - Claude evalúa la calidad de la respuesta
         var promptGrader = $"""
                             Eres un evaluador experto de respuestas de inteligencia artificial.
                             Evalúa la siguiente respuesta generada por un modelo de IA.
@@ -701,24 +718,20 @@ async Task Demo1_PromptEval()
         {
             Model = AnthropicModels.Claude45Haiku,
             MaxTokens = 200,
-            Messages = new List<Message> {  new Message(RoleType.User, promptGrader) }
+            Messages = new List<Message> { new Message(RoleType.User, promptGrader) }
         });
-        
+
         var gradingText = gradingInputs.Message.ToString();
-        
-        // Extraer la puntuación del texto
         var puntuacion = ExtraerPuntuacion(gradingText);
         puntuaciones.Add(puntuacion);
-        
+
         Console.WriteLine($"Puntuación: {puntuacion}/10");
         Console.WriteLine();
     }
-    
-    // Paso 5: Calcular puntuación promedio
+
     var promedio = puntuaciones.Average();
     Console.WriteLine($"═══ Puntuación promedio del prompt: {promedio:F2}/10 ═══");
     Console.WriteLine("\nModifica el promptTemplate y vuelve a correr — ¿sube la puntuación?");
-    
 }
 
 static double ExtraerPuntuacion(string texto)
@@ -733,7 +746,7 @@ static double ExtraerPuntuacion(string texto)
                 return n;
         }
     }
-    return 5.0; // fallback si no se puede parsear
+    return 5.0;
 }
 
 async Task Demo2_ExtendedThinking()
@@ -753,23 +766,23 @@ async Task Demo2_ExtendedThinking()
                    ¿Cuál es la estrategia óptima para minimizar el costo total de envío?
                    Muestra tu razonamiento paso a paso.
                    """;
-    
+
     Console.WriteLine("Problema:\n" + problema);
     Console.WriteLine("\n[Con extended thinking habilitado...]\n");
-    
+
     var sw = Stopwatch.StartNew();
 
     var response = await client.Messages.GetClaudeMessageAsync(new MessageParameters
     {
         Model = AnthropicModels.Claude46Sonnet,
-        MaxTokens = 8000,           // Debe ser > BudgetTokens
-        Messages = new List<Message> { new Message(RoleType.User, problema)},
+        MaxTokens = 8000,
+        Messages = new List<Message> { new Message(RoleType.User, problema) },
         Thinking = new ThinkingParameters
         {
-            BudgetTokens = 5000         // Cuántos tokens puede usar para pensar
+            BudgetTokens = 5000
         }
     });
-    
+
     sw.Stop();
 
     foreach (var block in response.Content)
@@ -779,7 +792,7 @@ async Task Demo2_ExtendedThinking()
             var preview = thinkingContent.Thinking.Length > 300
                 ? thinkingContent.Thinking[..300] + "..."
                 : thinkingContent.Thinking;
-            
+
             Console.WriteLine($"[BLOQUE DE RAZONAMIENTO — {thinkingContent.Thinking.Length} chars]");
             Console.WriteLine(preview);
             Console.WriteLine();
@@ -790,7 +803,7 @@ async Task Demo2_ExtendedThinking()
             Console.WriteLine(textContent.Text);
         }
     }
-    
+
     Console.WriteLine($"\nTiempo total: {sw.ElapsedMilliseconds}ms");
 }
 
@@ -799,7 +812,7 @@ async Task Demo3_ImageSupport()
     Console.WriteLine("=== DEMO 3: Soporte de imágenes ===\n");
 
     var imageURL = "https://imagenes.elpais.com/resizer/v2/5CT77NK57GLI5Z6AGDWQ5HMH3Y.jpg?auth=743039883068bfcaf71a844546b7cec43aaa92da697a4f8b57483c6a4a0b00df&width=1200";
-    
+
     Console.WriteLine($"Analizando imagen: {imageURL}\n");
 
     var response = await client.Messages.GetClaudeMessageAsync(new MessageParameters
@@ -813,12 +826,10 @@ async Task Demo3_ImageSupport()
                 Role = RoleType.User,
                 Content = new List<ContentBase>
                 {
-                    // El texto va como TextContent
                     new TextContent
                     {
                         Text = "Describe brevemente esta imagen. ¿Qué tipo de gráfico o visualización es?"
                     },
-                    // La imagen va como ImageContent con Source.Url
                     new ImageContent
                     {
                         Source = new ImageSource
@@ -830,9 +841,8 @@ async Task Demo3_ImageSupport()
                 }
             }
         }
-        
     });
-    
+
     Console.WriteLine($"Descripción de Claude:\n{response.Message}");
 }
 
@@ -858,123 +868,15 @@ async Task Demo4_PromptCaching()
                          Un pedido en estado En proceso requiere la aprobación de un supervisor para poder cancelarse. El agente de soporte debe escalar la solicitud al supervisor de turno mediante el sistema de tickets interno.
                          Un pedido en estado Enviado no puede cancelarse bajo ninguna circunstancia; el cliente deberá esperar la entrega e iniciar una devolución formal.
                          Un pedido en estado Entregado no admite cancelación; solo aplica la política de devoluciones del Capítulo 3.
-
-                         1.3 Modificaciones de pedidos
-                         Las modificaciones de dirección de envío solo se permiten cuando el pedido está en estado Pendiente.
-                         Los cambios de producto (sustituciones o adiciones) requieren cancelar el pedido original y crear uno nuevo, salvo excepciones aprobadas por el equipo de ventas.
-                         Los cambios de cantidad pueden procesarse en estado Pendiente o En proceso, sujeto a disponibilidad de inventario.
-
-                         1.4 Pedidos duplicados
-                         Si el sistema detecta un posible duplicado (mismo cliente, mismo producto, mismo día), generará una alerta automática.
-                         El agente debe contactar al cliente dentro de las 2 horas para confirmar si el duplicado fue intencional antes de procesarlo.
-
-                         1.5 Pedidos urgentes
-                         Los pedidos marcados como urgentes tienen prioridad en el proceso de preparación y envío.
-                         Solo los supervisores pueden marcar un pedido como urgente; los clientes deben solicitarlo a través del soporte.
-                         Existe un cargo adicional del 15% sobre el total del pedido para el servicio urgente.
-
-                         ══════════════════════════════════════════════════
-
-                         Capítulo 2: Crédito del cliente
-
-                         2.1 Asignación de límites de crédito
-                         Los límites de crédito se asignan a cada cliente durante el proceso de incorporación, basados en su historial crediticio externo y el volumen de negocio proyectado.
-                         Los clientes nuevos reciben un límite inicial estándar de $5,000 USD, revisable a los 90 días.
-
-                         2.2 Pedidos que superan el límite
-                         Los pedidos que superan el límite de crédito disponible son bloqueados automáticamente por el sistema y requieren preaprobación formal.
-                         El agente de soporte debe notificar al cliente de la situación y ofrecer alternativas: pago parcial anticipado, reducción del pedido, o solicitud de incremento temporal de crédito.
-
-                         2.3 Revisiones periódicas de crédito
-                         Las revisiones de crédito ocurren automáticamente cada 90 días para todos los clientes activos.
-                         Los clientes pueden solicitar una revisión anticipada si consideran que su perfil crediticio ha mejorado significativamente.
-                         Las revisiones son realizadas por el equipo de riesgo crediticio, no por soporte técnico.
-
-                         2.4 Incrementos temporales de crédito
-                         Los incrementos temporales de crédito tienen una vigencia máxima de 30 días.
-                         Requieren autorización del gerente de crédito y están sujetos a una evaluación rápida del historial de pagos reciente.
-                         Solo se pueden conceder dos incrementos temporales por año por cliente.
-
-                         2.5 Bloqueo de cuentas por morosidad
-                         Las cuentas con facturas vencidas por más de 60 días quedan bloqueadas para nuevos pedidos.
-                         El desbloqueo requiere el pago total de la deuda vencida más los cargos por mora aplicables.
-
-                         ══════════════════════════════════════════════════
-
-                         Capítulo 3: Política de devoluciones
-
-                         3.1 Condiciones generales
-                         Se aceptan devoluciones dentro de los 30 días posteriores a la fecha de entrega confirmada.
-                         Los productos deben estar en condición original: sin uso, en su embalaje original, con todos los accesorios y documentación incluidos.
-
-                         3.2 Proceso de devolución
-                         El cliente debe solicitar una Autorización de Devolución de Mercancía (RMA) a través del portal de clientes o contactando a soporte.
-                         Una vez aprobada la RMA, el cliente tiene 7 días hábiles para enviar el producto.
-                         Los gastos de envío de la devolución son responsabilidad del cliente, excepto cuando el motivo sea un error del proveedor o producto defectuoso.
-
-                         3.3 Productos dañados
-                         Los productos que lleguen dañados deben reportarse dentro de las 48 horas siguientes a la recepción.
-                         Es obligatorio adjuntar documentación fotográfica del daño al momento del reporte.
-                         Los reportes fuera de plazo no serán procesados como daño en tránsito y se tratarán como devoluciones estándar.
-
-                         3.4 Reembolsos
-                         Los reembolsos aprobados se procesan en un plazo de 5 a 7 días hábiles.
-                         El reembolso se realiza al mismo método de pago utilizado en la compra original.
-                         Las devoluciones de productos adquiridos con descuento especial solo dan derecho a crédito en cuenta, no a reembolso en efectivo.
-
-                         ══════════════════════════════════════════════════
-
-                         Capítulo 4: Envíos
-
-                         4.1 Modalidades de envío
-                         Envío estándar: 3 a 5 días hábiles, sin costo adicional para pedidos superiores a $200 USD.
-                         Envío express: 1 a 2 días hábiles, con costo adicional de $25 USD o el 5% del pedido (el mayor de los dos).
-                         Envío same-day: disponible solo en ciudades seleccionadas, con costo adicional de $50 USD; el pedido debe realizarse antes de las 10:00 AM hora local.
-
-                         4.2 Pedidos internacionales
-                         Los pedidos internacionales requieren documentación de aduanas completa, incluyendo factura comercial y lista de empaque.
-                         Los tiempos de entrega internacionales varían entre 7 y 21 días hábiles según el destino.
-                         Los aranceles e impuestos de importación son responsabilidad del destinatario, salvo acuerdo previo con el departamento de ventas.
-
-                         4.3 Pedidos al por mayor
-                         Los pedidos al por mayor (50 unidades o más del mismo SKU) tienen envío estándar gratuito independientemente del valor del pedido.
-                         Los pedidos al por mayor requieren confirmación de disponibilidad con al menos 72 horas de anticipación.
-
-                         4.4 Seguimiento de envíos
-                         Todos los envíos incluyen número de rastreo enviado automáticamente por correo electrónico al momento del despacho.
-                         En caso de retraso superior a 2 días hábiles sobre el tiempo prometido, el cliente tiene derecho a solicitar un reembolso del costo de envío.
-
-                         ══════════════════════════════════════════════════
-
-                         Capítulo 5: Facturación
-
-                         5.1 Generación de facturas
-                         Las facturas se generan automáticamente al momento del envío del pedido.
-                         Cada factura incluye: número de pedido, descripción de productos, cantidades, precios unitarios, descuentos aplicados, subtotal, impuestos y total.
-
-                         5.2 Condiciones de pago
-                         Cuentas aprobadas con historial de más de 6 meses: pago neto a 30 días desde la fecha de factura.
-                         Cuentas nuevas o con historial menor a 6 meses: pago inmediato (contra entrega o previo al envío).
-                         Cuentas con incidencias previas de morosidad: pueden requerir pago anticipado según criterio del equipo de crédito.
-
-                         5.3 Cargos por mora
-                         Los pagos tardíos generan un cargo mensual del 1.5% sobre el saldo vencido.
-                         Los cargos por mora se acumulan diariamente y se consolidan en el estado de cuenta mensual.
-
-                         5.4 Disputas de facturación
-                         Las disputas de facturación deben presentarse dentro de los 60 días desde la fecha de emisión de la factura.
-                         El cliente debe especificar el número de factura, los ítems en disputa y el motivo detallado.
-                         Las disputas presentadas fuera de plazo no serán procesadas y el monto original será considerado aceptado.
-                         El equipo de facturación tiene un plazo de 10 días hábiles para resolver cualquier disputa presentada correctamente.
                          """;
-    
+
     var preguntas = new[]
     {
         "¿Puede un cliente cancelar un pedido que está actualmente en proceso?",
         "¿Qué ocurre si un pedido supera el límite de crédito del cliente?",
         "¿Cuánto tiempo tiene un cliente para reportar un producto dañado?"
     };
-    
+
     Console.WriteLine("Haciendo 3 preguntas sobre el mismo documento...\n");
 
     for (int i = 0; i < preguntas.Length; i++)
@@ -996,20 +898,25 @@ async Task Demo4_PromptCaching()
                 new Message(RoleType.User, preguntas[i])
             }
         });
-        
+
         sw.Stop();
-        
+
         Console.WriteLine($"Pregunta {i + 1}: {preguntas[i]}");
         Console.WriteLine($"Respuesta: {response.Message.ToString()[..Math.Min(100, response.Message.ToString().Length)]}...");
         Console.WriteLine($"Tiempo: {sw.ElapsedMilliseconds}ms");
-        
-        // tokens leídos del caché > 0 en llamadas 2 y 3 si el caché funcionó
         Console.WriteLine($"Tokens leídos del caché: {response.Usage.CacheReadInputTokens}");
         Console.WriteLine($"Tokens escritos en caché: {response.Usage.CacheCreationInputTokens}");
         Console.WriteLine();
     }
-    
+
     Console.WriteLine("Observar: las llamadas 2 y 3 deberían tener tokens leídos del caché > 0");
     Console.WriteLine("y ser más rápidas que la primera.");
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Records del endpoint (deben ir al final, después de todas las funciones locales)
+// ──────────────────────────────────────────────────────────────────────────────
+
+record SoporteRequest(string Pregunta);
+record SoporteResponse(string Respuesta, TokenUsage Tokens);
+record TokenUsage(int Entrada, int Salida);
