@@ -60,6 +60,91 @@ app.MapPost("/api/soporte", async (SoporteRequest req) =>
     ));
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// RETO 4-A: Tool real — POST /api/soporte/agente
+// Claude puede llamar get_current_user() para saber quién pregunta
+// ──────────────────────────────────────────────────────────────────────────────
+
+var toolGetCurrentUser = new Function(
+    "get_current_user",
+    "Returns the profile of the currently authenticated user: name and role. " +
+    "Call this whenever the user asks who they are, what their role is, " +
+    "or when the answer depends on knowing the caller's identity or permissions.",
+    JsonNode.Parse("""{"type":"object","properties":{},"required":[]}""")
+);
+
+app.MapPost("/api/soporte/agente", async (SoporteRequest req) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Pregunta))
+        return Results.BadRequest(new { error = "La pregunta no puede estar vacía." });
+
+    var messages = new List<Message> { new Message(RoleType.User, req.Pregunta) };
+
+    // Llamada 1: Claude decide si necesita el tool
+    var resp1 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+    {
+        Model = AnthropicModels.Claude46Sonnet,
+        MaxTokens = 1024,
+        System = systemSimed,
+        Messages = messages,
+        Tools = new List<Tool> { toolGetCurrentUser }
+    });
+
+    // Si Claude solicitó el tool, ejecutarlo y hacer la segunda llamada
+    if (resp1.StopReason == "tool_use")
+    {
+        var toolCall = resp1.Content.OfType<ToolUseContent>().First();
+
+        // Función que simula obtener el usuario autenticado
+        var usuarioJson = JsonSerializer.Serialize(new
+        {
+            nombre = "Jordan Talahua",
+            rol    = "Desarrollador"
+        });
+
+        // Devolver el resultado del tool a Claude
+        messages.Add(resp1.Message);
+        messages.Add(new Message
+        {
+            Role = RoleType.User,
+            Content = new List<ContentBase>
+            {
+                new ToolResultContent
+                {
+                    ToolUseId = toolCall.Id,
+                    Content   = new List<ContentBase> { new TextContent { Text = usuarioJson } }
+                }
+            }
+        });
+
+        // Llamada 2: Claude formula la respuesta final con la info del usuario
+        var resp2 = await client.Messages.GetClaudeMessageAsync(new MessageParameters
+        {
+            Model    = AnthropicModels.Claude46Sonnet,
+            MaxTokens = 1024,
+            System   = systemSimed,
+            Messages = messages,
+            Tools    = new List<Tool> { toolGetCurrentUser }
+        });
+
+        return Results.Ok(new AgenteResponse(
+            resp2.Message.ToString(),
+            toolCall.Name,
+            usuarioJson,
+            new TokenUsage(resp1.Usage.InputTokens + resp2.Usage.InputTokens,
+                           resp1.Usage.OutputTokens + resp2.Usage.OutputTokens)
+        ));
+    }
+
+    // Claude respondió directamente sin necesitar el tool
+    return Results.Ok(new AgenteResponse(
+        resp1.Message.ToString(),
+        null,
+        null,
+        new TokenUsage(resp1.Usage.InputTokens, resp1.Usage.OutputTokens)
+    ));
+});
+
 app.Run();
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -919,4 +1004,5 @@ async Task Demo4_PromptCaching()
 
 record SoporteRequest(string Pregunta);
 record SoporteResponse(string Respuesta, TokenUsage Tokens);
+record AgenteResponse(string Respuesta, string? ToolUsado, string? ResultadoTool, TokenUsage Tokens);
 record TokenUsage(int Entrada, int Salida);
