@@ -9,7 +9,7 @@ using Tool = Anthropic.SDK.Common.Tool;
 
 var client = new AnthropicClient(); // lee ANTHROPIC_API_KEY
 
-var demo = 17;
+var demo = 18;
 
 switch (demo)
 {
@@ -31,6 +31,9 @@ switch (demo)
 
     // RETO - Sesión 3
     case 17: await RetoSesion3.Ejecutar(client); break;
+
+    // RETO - Sesión 4
+    case 18: await RetoSesion4.Ejecutar(client); break;
 
     // DEMOS - Sesión 5
     case 13: await Demo1_PromptEval();  break;
