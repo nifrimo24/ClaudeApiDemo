@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ClaudeApiDemo": {
+      "commandName": "Project",
+      "hotReloadEnabled": false
+    }
+  }
+}
